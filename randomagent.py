@@ -33,19 +33,21 @@ def start_simulation():
 
 def start_multiple_simulations(sample_size, run_num, return_dict):
     try:
+        counter = 0
         all_turns = []
         all_durations = []
         player_scores = [0, 0, 0, 0]
         for i in range(sample_size):
+            counter += 1
             game, turns, duration = start_simulation()
             all_turns.append(turns)
             all_durations.append(duration)
             for player_num, player in enumerate(game.get_all_location()):
                 if all(x <0 for x in player):
-                    player_scores[player_num] += 1
+                    player_scores[(player_num + counter) % 4] += 1
         genormaliseerd_winners = [wins/sample_size for wins in player_scores]
         genormaliseerd_tijd = mean(all_durations)
-        genormaliseerd_turns = mean(all_durations)
+        genormaliseerd_turns = mean(all_turns)
         return_dict[run_num] = [genormaliseerd_winners, genormaliseerd_tijd, genormaliseerd_turns]
         print(f"Run number {run_num} done")
     except Exception as ex:
