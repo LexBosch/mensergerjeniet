@@ -9,7 +9,7 @@ import numpy as np
 from math import ceil, floor
 import time
 from statistics import mean
-
+import random
 
 def start_simulation():
     random_numbers = list(np.random.uniform(size=10000))
@@ -19,9 +19,13 @@ def start_simulation():
         for player in [0, 1, 2, 3]:
             roll = ceil(random_numbers.pop()*6)
             # roll = 6
+            # roll = random.randint(1,6)
+            # roll = np.random.randint(1,7)
             pawns_to_move = game.players[player].get_possible_moves(roll)
             if pawns_to_move:
                 move_to_chose = floor(len(pawns_to_move)*random_numbers.pop())
+#                 moves_to_chose = random.randint(0,len(pawns_to_move))
+#                 moves_to_chose = np.random.randint(0,len(pawns_to_move)-1)
                 to_pick = pawns_to_move[move_to_chose]
                 game.do_player_move(player, to_pick, roll)
             locs = game.players[player].get_pawn_locations()
