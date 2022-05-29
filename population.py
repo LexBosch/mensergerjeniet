@@ -4,9 +4,10 @@ import random
 from math import ceil
 from operator import itemgetter
 import numpy as np
-import multiprocessing
+from pathos import multiprocessing
 import time
 import matplotlib.pyplot as plt
+from boltons import iterutils
 
 
 class Population():
@@ -146,26 +147,46 @@ class Population():
         return player_indices[turn_index], turn_count, winner
 
     def progress_with_MP(self, iterations=100, games_per_model_per_iteration=100, illegal_move_penalty=0.01, win_reward=1, total_move_reward=0.2, sigma=0.1, max_rounds=1000):
+        num_cores = 10
         games_per_iteration = int(games_per_model_per_iteration * self.population_size / self.players_per_game)
         illegal_move_penalty = illegal_move_penalty * -1
         
-        manager = multiprocessing.Manager()
-        results_dict = manager.dict()
-        pool = multiprocessing.Pool(10)
+        results_dict = []
+        pool = multiprocessing.Pool(num_cores)
+
+        start_time = time.time()
 
         for iteration in range(iterations):
-            print(iteration)
             self.available_models = []
             player_sets = [self._get_players(self.players_per_game) for game in range(games_per_iteration)]
-            print(player_sets)
             jobs = []
-            for ID in range(len(player_sets)):
-                job = pool.apply_async(self._play_MADN_with_MP, args=(ID, [self.models[player] for player in player_sets[ID]], results_dict, illegal_move_penalty, win_reward, self.players_per_game, total_move_reward, max_rounds))
-                jobs.append(job)
-            for job in jobs:
-                [job.wait() for job in jobs]
+            num_lists = num_cores
+            subgames = chunks(player_sets, num_lists)
 
-            print(results_dict)
+
+
+            for ID, sin_set in enumerate(subgames):
+                player_models = [[self.models[player] for player in sin_game] for sin_game in sin_set]
+                job = pool.apply_async(self._play_MADN_with_MP, args=(ID, player_models,sin_set, results_dict, illegal_move_penalty, win_reward, self.players_per_game, total_move_reward, max_rounds))
+                jobs.append(job)
+            for num, sin_job in enumerate(jobs):
+                results_dict += sin_job.get()
+
+            for match in results_dict:
+                for num, _ in enumerate(match[0]):
+                    self.models[match[1][num]].update_fitness(iteration, match[0][num])
+
+            # all_fitnesses = [0 for i in range(40)]
+            #
+            # for played_game in results_dict:
+            #     for num, _ in enumerate(played_game[0]):
+            #         player_num = played_game[1][num]
+            #         all_fitnesses[player_num] += played_game[0][num]
+            #
+            # model_fitnesses = [sin_fitness/games_per_model_per_iteration for sin_fitness in all_fitnesses]
+            #
+            # for num, sin_mod in enumerate(self.models):
+            #     sin_mod.set_fitness(iteration, model_fitnesses[num])
 
             # Select population_size/2 survivors for the next generation
             survivor_indices = [i[0] for i in sorted(enumerate([m.fitness for m in self.models]), key=lambda k: k[1], reverse=True)][:round(self.population_size/2)]
@@ -182,68 +203,71 @@ class Population():
 
         return self.models
 
-    def _play_MADN_with_MP(self, ID, players, results_dict, illegal_move_penalty, win_reward, players_per_game=4, total_move_reward=0.2, max_rounds=1000):
+    def _play_MADN_with_MP(self, ID, game, player_ids, results_dict, illegal_move_penalty, win_reward, players_per_game=4, total_move_reward=0.2, max_rounds=1000):
+        all_game_results = []
+        for num, players in enumerate(game):
 
-        fitness_list = [0] * players_per_game
-        board = Board(num_players=players_per_game)
-        turn_index, turn_count = 0, 0
-        winner = None
-        move_dict = {-1: 41, -2: 42, -3: 43, -4: 44} # short dict to translate some positions to number of moved boxes
 
-        while winner is None:
+            fitness_list = [0] * players_per_game
+            board = Board(num_players=players_per_game)
+            turn_index, turn_count = 0, 0
+            winner = None
+            move_dict = {-1: 41, -2: 42, -3: 43, -4: 44} # short dict to translate some positions to number of moved boxes
 
-            turn_count += 1 # count the number of turns
-            roll = random.randint(1, 6) # roll the die
-            possible_moves = board.players[turn_index].get_possible_moves(roll) # get moves that are possible
-            
-            # Prepare the input
-            locations = board.get_all_location(relative=True, player_num=turn_index) # get the positions of all pawns
-            locations = [locations[turn_index]] + locations[:turn_index] + locations[turn_index+1:] # change the order of the positions such that the current model's pawns are in front as Lex did not think of this smh
-            input = []
-            for location in locations:
-                for pos in location:
-                    input.append(pos)
-            input.append(roll)
-            
-            picked_moves = players[turn_index].pick_move(input) # get the preference of the model for each move 
-            picked_moves_indices = [i[0] for i in sorted(enumerate(picked_moves), key=lambda k: k[1], reverse=True)]
-            
-            if possible_moves: # check if there are moves that can be executed
+            while winner is None:
 
-                # Loop over the player's preferred moves and execute the most preferred move that occurs in the moves that are possible
-                for move_index in picked_moves_indices:
-                    if move_index in possible_moves:
-                        board.do_player_move(turn_index, move_index, roll)
-                        break
+                turn_count += 1 # count the number of turns
+                roll = random.randint(1, 6) # roll the die
+                possible_moves = board.players[turn_index].get_possible_moves(roll) # get moves that are possible
 
-                # Check if the move resulted in a win, and if so end the game
-                locs = board.players[turn_index].get_pawn_locations()
-                if all(pawn < 0 for pawn in locs):
-                    winner = turn_index
-            
-            # Check if either a) the model wanted to 'pass' a turn while a move was available, or b) the model wanted to make a move
-            # while no moves were available. And if so, apply a penalty to the fitness if the illegal_move_penalty parameter != 0.
-            if (not possible_moves) != (picked_moves_indices[0] == 4):
-                fitness_list[turn_index] += illegal_move_penalty
- 
-            # Check if the maximum number of rounds has been reached
-            if ceil(turn_count/players_per_game) >= max_rounds:
-                winner = False
-            
-            turn_index = (turn_index + 1) % players_per_game # set turn index to the next player
+                # Prepare the input
+                locations = board.get_all_location(relative=True, player_num=turn_index) # get the positions of all pawns
+                locations = [locations[turn_index]] + locations[:turn_index] + locations[turn_index+1:] # change the order of the positions such that the current model's pawns are in front as Lex did not think of this smh
+                input = []
+                for location in locations:
+                    for pos in location:
+                        input.append(pos)
+                input.append(roll)
 
-        if winner != False: 
-            fitness_list[winner] += win_reward # update the fitness for the winner
-            winner = True
-        
-        # Add the 'move reward' fitness (the maximum reward is given if all pawns are in the final boxes)
-        for player_index in range(players_per_game):
-            final_positions = board.get_all_location(relative=True, player_num=player_index)[player_index] # get the positions of all pawns for a player
-            move_fitness = sum([move_dict.get(x,x) for x in final_positions]) / 170 * total_move_reward
-            fitness_list[player_index] += move_fitness
+                picked_moves = players[turn_index].pick_move(input) # get the preference of the model for each move
+                picked_moves_indices = [i[0] for i in sorted(enumerate(picked_moves), key=lambda k: k[1], reverse=True)]
 
-        results_dict[ID] = [fitness_list, turn_count, winner] # write results to multi-threading safe dict
+                if possible_moves: # check if there are moves that can be executed
 
+                    # Loop over the player's preferred moves and execute the most preferred move that occurs in the moves that are possible
+                    for move_index in picked_moves_indices:
+                        if move_index in possible_moves:
+                            board.do_player_move(turn_index, move_index, roll)
+                            break
+
+                    # Check if the move resulted in a win, and if so end the game
+                    locs = board.players[turn_index].get_pawn_locations()
+                    if all(pawn < 0 for pawn in locs):
+                        winner = turn_index
+
+                # Check if either a) the model wanted to 'pass' a turn while a move was available, or b) the model wanted to make a move
+                # while no moves were available. And if so, apply a penalty to the fitness if the illegal_move_penalty parameter != 0.
+                if (not possible_moves) != (picked_moves_indices[0] == 4):
+                    fitness_list[turn_index] += illegal_move_penalty
+
+                # Check if the maximum number of rounds has been reached
+                if ceil(turn_count/players_per_game) >= max_rounds:
+                    winner = False
+
+                turn_index = (turn_index + 1) % players_per_game # set turn index to the next player
+
+            if winner != False:
+                fitness_list[winner] += win_reward # update the fitness for the winner
+                winner = True
+
+            # Add the 'move reward' fitness (the maximum reward is given if all pawns are in the final boxes)
+            for player_index in range(players_per_game):
+                final_positions = board.get_all_location(relative=True, player_num=player_index)[player_index] # get the positions of all pawns for a player
+                move_fitness = sum([move_dict.get(x,x) for x in final_positions]) / 170 * total_move_reward
+                fitness_list[player_index] += move_fitness
+
+            all_game_results.append([fitness_list,player_ids[num] ,turn_count, winner]) # write results to multi-threading safe dict
+        return all_game_results
     def play_MADN_vs_random(self, model, max_rounds=1000):
         board = Board(num_players=self.players_per_game)
         turn_index, turn_count, model_illegal_steps_count = 0, 0, 0
@@ -331,11 +355,11 @@ def make_plots():
     iterations = 100
     games_per_model_per_iteration = 100
     illegal_move_penalty = 0.01
-    total_move_reward = 0.6
+    total_move_reward = 2
     win_reward = 0.4
-    sigma = 0.1
+    sigma = 0.3
     max_rounds = 1000
-    num_eval_games = 100
+    num_eval_games = 200
 
     start = time.time()
     win_rates, fitnesses = [], []
@@ -346,7 +370,7 @@ def make_plots():
 
         # Progress the population one generation at the time
         print('Gen ', i)
-        models = p.progress(iterations=1, games_per_model_per_iteration=games_per_model_per_iteration, 
+        models = p.progress_with_MP(iterations=1, games_per_model_per_iteration=games_per_model_per_iteration,
             illegal_move_penalty=illegal_move_penalty, win_reward=win_reward, total_move_reward=total_move_reward, sigma=sigma, max_rounds=max_rounds)
         fittest_model = models[0]
 
@@ -380,6 +404,18 @@ def plot_fitness_incremental(fitnesses):
     plt.ylabel('Incremental fitness of fittest model vs randomized models')
     plt.xlabel('Generation')
     plt.show()
+
+
+def chunks(list_to_split, num_subs):
+    """Yield n number of striped chunks from l."""
+    new_list = []
+    list_len = len(list_to_split)
+    if list_len < num_subs:
+        num_subs = list_len
+    chunk_sizes = int(list_len / num_subs)
+    for i in range(0, num_subs):
+        new_list.append(list_to_split[i*chunk_sizes:(i+1)*chunk_sizes])
+    return new_list
 
 if __name__ == '__main__':
     make_plots()
