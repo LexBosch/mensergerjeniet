@@ -9,11 +9,18 @@ import time
 import matplotlib.pyplot as plt
 from boltons import iterutils
 from statistics import mean
+import warnings
+from scipy.stats import gaussian_kde
+from scipy.interpolate import interp1d
+import datetime
+
+np.seterr(divide='ignore', invalid='ignore')
+warnings.filterwarnings('ignore')
 
 
 class Population():
 
-    def __init__(self, population_size=40, dimensions=2, weights_init_method='zeros', players_per_game=4):
+    def __init__(self, population_size=40, dimensions=2, weights_init_method='zeros', players_per_game=4, hidden_layer_size=10):
         assert population_size % 2 == 0,"population_size must be divisible by 2"
 
         self.population_size = population_size
@@ -24,7 +31,7 @@ class Population():
         self.available_models = []
         self.models = []
         for i in range(self.population_size):
-            self.models.append(Model(dimensions=[(players_per_game*4)+1,10,5]))
+            self.models.append(Model(dimensions=[(players_per_game*4)+1,hidden_layer_size,5]))
     
     def progress(self, iterations=100, games_per_model_per_iteration=100, illegal_move_penalty=0.01, win_reward=1, total_move_reward=0.2, sigma=0.1, max_rounds=1000):
         games_per_iteration = int(games_per_model_per_iteration * self.population_size / self.players_per_game)
@@ -176,6 +183,8 @@ class Population():
             for match in results_dict:
                 for num, _ in enumerate(match[0]):
                     self.models[match[1][num]].update_fitness(iteration, match[0][num])
+
+
             survivor_indices = [i[0] for i in sorted(enumerate([m.fitness for m in self.models]), key=lambda k: k[1], reverse=True)][:round(self.population_size/2)]
             self.models = list(itemgetter(*survivor_indices)(self.models))
 
@@ -227,10 +236,15 @@ class Population():
                             board.do_player_move(turn_index, move_index, roll)
                             break
 
-                    # Check if the move resulted in a win, and if so end the game
+
                     locs = board.players[turn_index].get_pawn_locations()
+                    # # Check if the move resulted in a win, and if so end the game
                     if all(pawn < 0 for pawn in locs):
                         winner = turn_index
+
+                    # Alternate game rules: if any one of the pawns enters the finish, the game is won by that player
+                    # if any(pawn < 0 for pawn in locs):
+                    #     winner = turn_index
 
                 # Check if either a) the model wanted to 'pass' a turn while a move was available, or b) the model wanted to make a move
                 # while no moves were available. And if so, apply a penalty to the fitness if the illegal_move_penalty parameter != 0.
@@ -292,11 +306,15 @@ class Population():
                             board.do_player_move(turn_index, move_index, roll)
                             break
 
-                    # Check if the move resulted in a win, and if so end the game
                     locs = board.players[turn_index].get_pawn_locations()
+                    # # Check if the move resulted in a win, and if so end the game
                     if all(pawn < 0 for pawn in locs):
                         winner = turn_index
-                
+
+                    # Alternate game rules: if any one of the pawns enters the finish, the game is won by that player
+                    # if any(pawn < 0 for pawn in locs):
+                    #     winner = turn_index
+
                 # Check if either a) the model wanted to 'pass' a turn while a move was available, or b) the model wanted to make a move
                 # while no moves were available. And if so, apply a penalty to the fitness if the illegal_move_penalty parameter != 0.
                 if (not possible_moves) != (picked_moves_indices[0] == 4):
@@ -309,14 +327,20 @@ class Population():
                     move_index = random.randint(0, len(possible_moves)-1) # randomly decide on a move
                     board.do_player_move(turn_index, possible_moves[move_index], roll) # execute said move
 
-                    # Check if the move resulted in a win, and if so end the game
                     locs = board.players[turn_index].get_pawn_locations()
+                    # Check if the move resulted in a win, and if so end the game
                     if all(pawn < 0 for pawn in locs):
                         winner = turn_index
+
+                    # Alternate game rules: if any one of the pawns enters the finish, the game is won by that player
+                    # if any(pawn < 0 for pawn in locs):
+                    #     winner = turn_index
  
             # Check if the maximum number of rounds has been reached, and if so, perform a return
             if ceil(turn_count/self.players_per_game) >= max_rounds:
-                return False, turn_count
+                model_final_positions = board.get_all_location(relative=True, player_num=model_turn_index)[model_turn_index]
+                move_fitness = sum([move_dict.get(x,x) for x in model_final_positions]) / 170
+                return False, model_illegal_steps_count, move_fitness, turn_count
             
             turn_index = (turn_index + 1) % self.players_per_game # set turn index to the next player
         
@@ -324,7 +348,7 @@ class Population():
         model_final_positions = board.get_all_location(relative=True, player_num=model_turn_index)[model_turn_index]
         move_fitness = sum([move_dict.get(x,x) for x in model_final_positions]) / 170
 
-        did_model_win = model_turn_index == turn_index
+        did_model_win = model_turn_index == ((turn_index-1)%self.players_per_game)
         return did_model_win, model_illegal_steps_count, move_fitness, turn_count
 
     def _get_players(self, players_per_game=4):
@@ -340,8 +364,7 @@ class Population():
 
 
     def evaluate_single_model_mp(self, model, illegal_move_penalty, win_reward, total_move_reward, games=100, max_rounds=1000, max_cores=10):
-        wins, fitness = 0, 0
-        num_subgames = [games // max_cores + (1 if x < games % max_cores else 0)  for x in range (max_cores)]
+        num_subgames = [games // max_cores + (1 if x < games % max_cores else 0) for x in range(max_cores)]
         pool = multiprocessing.Pool(max_cores)
         jobs = []
         for num_games in num_subgames:
@@ -371,31 +394,30 @@ class Population():
 
 def make_plots():
     # params
-    population_size = 80
-    iterations = 100
-    games_per_model_per_iteration = 200
-    illegal_move_penalty = 0.05
+    population_size = 100
+    iterations = 500
+    games_per_model_per_iteration = 300
+    illegal_move_penalty = 0.2
     total_move_reward = 2
-    win_reward = 1
-    sigma = 0.3
-    max_rounds = 1000
+    win_reward = 5
+    sigma = 0.5
+    max_rounds = 200
     num_eval_games = 1000
     processing_times = []
     start = time.time()
-    time_last_iteration = start
     win_rates, fitnesses = [], []
 
-    p = Population(population_size=population_size)
+    p = Population(population_size=population_size, hidden_layer_size=40)
 
     for i in range(iterations):
         start_iteration = time.time()
         # Progress the population one generation at the time
         print(f'Gen {i} | starting at {round(time.time()-start, 5)}')
         if processing_times:
-            time_till_done = round(mean(processing_times)*(iterations-1)/60, 1)
+            time_till_done = datetime.timedelta(seconds=(mean(processing_times)*(iterations-i)))
         else:
             time_till_done = "undefined"
-        print(f"Estimated to be done in {time_till_done} minutes")
+        print(f"Estimated to be done in {time_till_done}")
         models = p.progress_with_MP(iterations=1, games_per_model_per_iteration=games_per_model_per_iteration,
             illegal_move_penalty=illegal_move_penalty, win_reward=win_reward, total_move_reward=total_move_reward, sigma=sigma, max_rounds=max_rounds)
         fittest_model = models[0]
@@ -419,13 +441,14 @@ def make_plots():
     plot_fitness_incremental(fitnesses)
 
 def plot_winrate(win_rates):
-    plt.plot(win_rates)
+    plt.plot((win_rates))
     plt.ylabel('Win rate of fittest model vs randomized models')
+    plt.axhline(y=0.25, color='r')
     plt.xlabel('Generation')
     plt.show()
 
 def plot_fitness(fitnesses):
-    plt.plot(fitnesses)
+    plt.plot((fitnesses))
     plt.ylabel('Fitness of fittest model vs randomized models')
     plt.xlabel('Generation')
     plt.show()
@@ -448,6 +471,10 @@ def chunks(list_to_split, num_subs):
     for i in range(0, num_subs):
         new_list.append(list_to_split[i*chunk_sizes:(i+1)*chunk_sizes])
     return new_list
+
+
+
+
 
 if __name__ == '__main__':
     make_plots()
