@@ -1,3 +1,11 @@
+import logging
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
+Log_Format = "%(asctime)s - %(message)s"
+logging.basicConfig(filename = "logfile.log",
+                    format = Log_Format,
+                    level=logging.INFO)
+
 from model import Model
 from board import Board
 import random
@@ -7,12 +15,11 @@ import numpy as np
 from pathos import multiprocessing
 import time
 import matplotlib.pyplot as plt
-from boltons import iterutils
 from statistics import mean
 import warnings
-from scipy.stats import gaussian_kde
-from scipy.interpolate import interp1d
 import datetime
+
+
 
 np.seterr(divide='ignore', invalid='ignore')
 warnings.filterwarnings('ignore')
@@ -154,8 +161,7 @@ class Population():
 
         return player_indices[turn_index], turn_count, winner
 
-    def progress_with_MP(self, iterations=100, games_per_model_per_iteration=100, illegal_move_penalty=0.01, win_reward=1, total_move_reward=0.2, sigma=0.1, max_rounds=1000):
-        num_cores = 10
+    def progress_with_MP(self, iterations=100, games_per_model_per_iteration=100, illegal_move_penalty=0.01, win_reward=1, total_move_reward=0.2, sigma=0.1, max_rounds=1000, num_cores = 10):
         games_per_iteration = int(games_per_model_per_iteration * self.population_size / self.players_per_game)
         illegal_move_penalty = illegal_move_penalty * -1
         
@@ -363,9 +369,9 @@ class Population():
         return players
 
 
-    def evaluate_single_model_mp(self, model, illegal_move_penalty, win_reward, total_move_reward, games=100, max_rounds=1000, max_cores=10):
-        num_subgames = [games // max_cores + (1 if x < games % max_cores else 0) for x in range(max_cores)]
-        pool = multiprocessing.Pool(max_cores)
+    def evaluate_single_model_mp(self, model, illegal_move_penalty, win_reward, total_move_reward, games=100, max_rounds=1000, num_cores=10):
+        num_subgames = [games // num_cores + (1 if x < games % num_cores else 0) for x in range(num_cores)]
+        pool = multiprocessing.Pool(num_cores)
         jobs = []
         for num_games in num_subgames:
             job = pool.apply_async(self.process_single_model, args=(model, illegal_move_penalty, win_reward, total_move_reward, num_games, max_rounds))
@@ -392,7 +398,7 @@ class Population():
             fitness.append(did_model_win*win_reward + move_fitness*total_move_reward - model_illegal_steps_count*illegal_move_penalty)
         return wins, fitness
 
-def make_plots():
+def make_plots(do_log = "print"):
     # params
     population_size = 100
     iterations = 500
@@ -403,6 +409,7 @@ def make_plots():
     sigma = 0.5
     max_rounds = 200
     num_eval_games = 1000
+    num_cores = 16
     processing_times = []
     start = time.time()
     win_rates, fitnesses = [], []
@@ -412,54 +419,66 @@ def make_plots():
     for i in range(iterations):
         start_iteration = time.time()
         # Progress the population one generation at the time
-        print(f'Gen {i} | starting at {round(time.time()-start, 5)}')
+        log_output(do_log, f'Gen {i} | starting at {round(time.time()-start, 5)}')
+
         if processing_times:
             time_till_done = datetime.timedelta(seconds=(mean(processing_times)*(iterations-i)))
         else:
             time_till_done = "undefined"
-        print(f"Estimated to be done in {time_till_done}")
+        log_output(do_log, f"Estimated to be done in {time_till_done}")
         models = p.progress_with_MP(iterations=1, games_per_model_per_iteration=games_per_model_per_iteration,
-            illegal_move_penalty=illegal_move_penalty, win_reward=win_reward, total_move_reward=total_move_reward, sigma=sigma, max_rounds=max_rounds)
+            illegal_move_penalty=illegal_move_penalty, win_reward=win_reward, total_move_reward=total_move_reward, sigma=sigma, max_rounds=max_rounds, num_cores=num_cores)
         fittest_model = models[0]
 
         # Do evaluation
-        print("Evaluating...")
-        win_rate, fitness = p.evaluate_single_model_mp(model=fittest_model, illegal_move_penalty=illegal_move_penalty, win_reward=win_reward, total_move_reward=total_move_reward, games=num_eval_games, max_rounds=max_rounds)
+        log_output(do_log, "Evaluating...")
+        win_rate, fitness = p.evaluate_single_model_mp(model=fittest_model, illegal_move_penalty=illegal_move_penalty, win_reward=win_reward, total_move_reward=total_move_reward, games=num_eval_games, max_rounds=max_rounds,num_cores=num_cores)
         win_rates.append(win_rate)
         fitnesses.append(fitness)
         time_last_iteration = time.time() - start_iteration
         processing_times.append(time_last_iteration)
-        print(f"Gained fitnes: {round(fitness, 5)} and winrate: {round(win_rate, 5)}")
-        print(f"delta fitnes: {round(fitness - mean(fitnesses), 5)} | delta winrate: {round(win_rate - 0.25, 5)}")
-        print('-'*40)
+        log_output(do_log, f"Gained fitnes: {round(fitness, 5)} and winrate: {round(win_rate, 5)}")
+        log_output(do_log, f"delta fitnes: {round(fitness - mean(fitnesses), 5)} | delta winrate: {round(win_rate - 0.25, 5)}")
+        log_output(do_log, "-"*40)
 
     end = time.time()
-    print('time: ', end - start)
-    
-    plot_winrate(win_rates)
-    plot_fitness(fitnesses)
-    plot_fitness_incremental(fitnesses)
+    log_output(do_log, f"Final processing time is {end-start} seconds")
 
-def plot_winrate(win_rates):
+    plot_winrate(win_rates, population_size, iterations, games_per_model_per_iteration, num_eval_games, illegal_move_penalty, total_move_reward, win_reward, sigma)
+    plot_fitness(fitnesses, population_size, iterations, games_per_model_per_iteration, num_eval_games, illegal_move_penalty, total_move_reward, win_reward, sigma)
+    plot_fitness_incremental(fitnesses, population_size, iterations, games_per_model_per_iteration, num_eval_games, illegal_move_penalty, total_move_reward, win_reward, sigma)
+
+def plot_winrate(win_rates, population_size, iterations, games_per_model_per_iteration, num_eval_games, illegal_move_penalty, total_move_reward, win_reward, sigma):
     plt.plot((win_rates))
+    plt.title("Plot of winrates of the fittestst models of each generation against random models.")
     plt.ylabel('Win rate of fittest model vs randomized models')
     plt.axhline(y=0.25, color='r')
     plt.xlabel('Generation')
-    plt.show()
+    plt.savefig(f'winrates_{population_size}_{iterations}_{games_per_model_per_iteration}.png')
 
-def plot_fitness(fitnesses):
+def plot_fitness(fitnesses, population_size, iterations, games_per_model_per_iteration, num_eval_games, illegal_move_penalty, total_move_reward, win_reward, sigma):
     plt.plot((fitnesses))
+    plt.title("Plot of fitness of the fittestst models of each generation against random models.")
     plt.ylabel('Fitness of fittest model vs randomized models')
     plt.xlabel('Generation')
-    plt.show()
+    plt.savefig(f'fitnesses_{population_size}_{iterations}_{games_per_model_per_iteration}.png')
 
-def plot_fitness_incremental(fitnesses):
+def plot_fitness_incremental(fitnesses, population_size, iterations, games_per_model_per_iteration, num_eval_games, illegal_move_penalty, total_move_reward, win_reward, sigma):
     incremental_fitnesses = [max([fitnesses[i], max(fitnesses[:i], default=0)]) for i in range(len(fitnesses))]
     plt.plot(incremental_fitnesses)
+    plt.title("Plot of incremental fitness of the fittestst models of each generation against random models.")
     plt.ylabel('Incremental fitness of fittest model vs randomized models')
     plt.xlabel('Generation')
-    plt.show()
+    plt.savefig(f'incremental_fitnesses_{population_size}_{iterations}_{games_per_model_per_iteration}.png')
 
+def log_output(do_log, message):
+    if do_log == "log":
+        logging.info(message)
+    if do_log == "print":
+        print(message)
+    if do_log == "both":
+        print(message)
+        logging.info(message)
 
 def chunks(list_to_split, num_subs):
     """Yield n number of striped chunks from l."""
@@ -474,7 +493,5 @@ def chunks(list_to_split, num_subs):
 
 
 
-
-
 if __name__ == '__main__':
-    make_plots()
+    make_plots(do_log="log")
