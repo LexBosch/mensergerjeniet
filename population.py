@@ -565,7 +565,7 @@ if __name__ == '__main__':
         iterations = 500
         games_per_model_per_iteration = 300
         illegal_move_penalty = 0.2
-        total_move_reward = 2
+        total_move_reward = 0
         win_reward = 5
         sigma = 0.5
         max_rounds = 200
