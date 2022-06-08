@@ -580,4 +580,5 @@ if __name__ == '__main__':
         num_cores = 16
         hidden_layer_size = 17
         do_log = "log"
+        min_sigma = None
     make_plots(args)
