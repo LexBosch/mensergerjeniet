@@ -436,7 +436,14 @@ def make_plots(args):
 
     p = Population(population_size=args.population_size, hidden_layer_size=args.hidden_layer_size)
 
+    args.min_sigma = args.sigma
+
     for i in range(args.iterations):
+
+        if args.sigma > 1:
+            args.sigma = args.min_sigma
+        args.sigma = args.sigma * 1.5
+
         start_iteration = time.time()
         # Progress the population one generation at the time
         log_output(args.do_log, f'Gen {i} | starting at {round(time.time() - start, 5)}')
@@ -567,7 +574,7 @@ if __name__ == '__main__':
         illegal_move_penalty = 0.2
         total_move_reward = 0
         win_reward = 5
-        sigma = 0.5
+        sigma = 0.01
         max_rounds = 200
         num_eval_games = 1000
         num_cores = 16
