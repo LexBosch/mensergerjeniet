@@ -3,3 +3,7 @@ __pycache__
 *.pickle
 
 logfile.log
+
+*.png
+
+*.json
