@@ -1,4 +1,4 @@
-# Mens erger je niet evolutionary algorythm
+# Mensch ärgere dich nicht evolutionary algorythm
 
 By Lex Bosch, Anton Ligterink en Cas van Rijbroek
 
